@@ -1,0 +1,29 @@
+:root { color-scheme: dark; --bg:#07070c; --card:#12121a; --line:#2a2a38; --text:#f3f3f7; --muted:#9a9aab; --blue:#110fff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+.app { max-width:880px; margin:0 auto; padding:40px 20px 80px; position:relative; }
+.glow { position:absolute; inset:-80px auto auto 10%; width:420px; height:420px; background:radial-gradient(circle,rgba(17,15,255,.22),transparent 70%); pointer-events:none; }
+.badge { display:inline-block; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:#c9c9ff; background:rgba(17,15,255,.15); border:1px solid rgba(17,15,255,.35); padding:6px 10px; border-radius:999px; }
+h1 { font-size:34px; margin:14px 0 8px; }
+.sub { color:var(--muted); margin:0; max-width:640px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:16px; }
+.hero .question { font-size:20px; line-height:1.4; margin:12px 0; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:700px){ .grid2 { grid-template-columns:1fr; } }
+h2 { margin:0 0 12px; font-size:16px; color:#d0d0ff; }
+h3 { margin:0 0 8px; font-size:14px; }
+.stat { font-size:28px; font-weight:700; margin-bottom:12px; }
+.rows div { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); color:var(--muted); }
+.rows b { color:var(--text); font-weight:600; }
+.pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; text-transform:uppercase; background:rgba(255,255,255,.08); }
+.pill.funded,.pill.paid,.pill.delivered { background:rgba(17,15,255,.2); color:#c5c4ff; }
+.pill.refunded,.pill.unknown { background:rgba(255,176,0,.15); color:#ffb000; }
+.link { color:#9aa0ff; word-break:break-all; }
+.note,.hint,.wallet,.status { color:var(--muted); }
+.action { margin:18px 0; padding-top:12px; border-top:1px solid var(--line); }
+.row { display:flex; gap:8px; margin-bottom:10px; }
+input { flex:1; background:#0b0b12; border:1px solid var(--line); color:var(--text); border-radius:10px; padding:10px 12px; }
+button { background:#1c1c28; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:10px 14px; cursor:pointer; }
+button.primary { background:var(--blue); border-color:var(--blue); }
+button:disabled { opacity:.5; cursor:not-allowed; }
+footer { color:var(--muted); font-size:12px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; }
