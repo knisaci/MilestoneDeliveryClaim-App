@@ -3,7 +3,7 @@ import { createClient } from 'genlayer-js'
 import { testnetBradbury } from 'genlayer-js/chains'
 import './App.css'
 
-const CONTRACT = '0xdD44E5d445259009b8113482E5131479C00B5315'
+const CONTRACT = '0x3fdfb8bfb3E5EfFa8f6048b52e072A012919adbd'
 const readClient = createClient({ chain: testnetBradbury })
 
 function short(addr) {
@@ -67,23 +67,22 @@ function App() {
 
   const wei = () => BigInt(Math.floor(Number(amount) * 1e18))
   const isClient = account && c && account.toLowerCase() === String(c.client || '').toLowerCase()
+  const isWorker = account && c && account.toLowerCase() === String(c.worker || '').toLowerCase()
   const pill = c?.status || 'loading'
 
   return (
     <div className="app">
       <div className="glow" />
       <header>
-        <div className="badge">GenLayer · Milestone escrow</div>
+        <div className="badge">GenLayer · Sealed milestone escrow</div>
         <h1>Milestone Delivery Claim</h1>
-        <p className="sub">Client locks GEN. Validators check public evidence. Worker is paid on delivery. Refunds wait until the deadline. Leftover capital returns to the client.</p>
+        <p className="sub">Client names the evidence URL. Worker seals a snapshot + hash. Resolve uses only that snapshot. A seal after the deadline cannot pay.</p>
       </header>
 
       <section className="card hero">
         <div className={'pill ' + pill}>{pill}</div>
         <p className="question">{c?.milestone_description || 'Loading…'}</p>
-        {c?.evidence_url && (
-          <a className="link" href={c.evidence_url} target="_blank" rel="noreferrer">{c.evidence_url}</a>
-        )}
+        {c?.evidence_url && <a className="link" href={c.evidence_url} target="_blank" rel="noreferrer">{c.evidence_url}</a>}
       </section>
 
       <section className="grid2">
@@ -97,21 +96,23 @@ function App() {
           </div>
         </div>
         <div className="card">
-          <h2>Parties</h2>
+          <h2>Sealed evidence</h2>
           <div className="rows">
-            <div><span>Client</span><b>{short(c?.client)}</b></div>
-            <div><span>Worker</span><b>{short(c?.worker)}</b></div>
-            <div><span>Paid</span><b>{c?.is_paid ? 'yes' : 'no'}</b></div>
-            <div><span>Refunded</span><b>{c?.is_refunded ? 'yes' : 'no'}</b></div>
+            <div><span>Sealed</span><b>{c?.evidence_sealed ? 'yes' : 'no'}</b></div>
+            <div><span>On time</span><b>{c?.sealed_on_time ? 'yes' : 'no'}</b></div>
+            <div><span>Sealed unix</span><b>{c ? String(c.sealed_unix) : '—'}</b></div>
+            <div><span>Hash</span><b>{c?.evidence_hash ? String(c.evidence_hash).slice(0, 12) + '…' : '—'}</b></div>
           </div>
         </div>
       </section>
 
       <section className="card">
-        <h2>Resolution</h2>
+        <h2>Parties / resolution</h2>
         <div className="rows">
+          <div><span>Client</span><b>{short(c?.client)}</b></div>
+          <div><span>Worker</span><b>{short(c?.worker)}</b></div>
           <div><span>Delivery</span><b>{c?.delivery_status || '—'}</b></div>
-          <div><span>Resolved</span><b>{c?.has_resolved ? 'yes' : 'no'}</b></div>
+          <div><span>Paid / refunded</span><b>{c?.is_paid ? 'paid' : c?.is_refunded ? 'refunded' : 'no'}</b></div>
         </div>
         <p className="note">{c?.note || 'No note yet.'}</p>
       </section>
@@ -122,39 +123,39 @@ function App() {
           <button className="primary" onClick={connect}>Connect wallet</button>
         ) : (
           <>
-            <p className="wallet">{short(account)}{isClient ? ' · client' : ''}</p>
+            <p className="wallet">{short(account)}{isClient ? ' · client' : ''}{isWorker ? ' · worker' : ''}</p>
             <div className="action">
-              <h3>Fund as client</h3>
+              <h3>Fund</h3>
               <div className="row">
                 <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
                 <button className="primary" disabled={loading || !isClient} onClick={() => sendTx('fund', wei(), 25000, 'Funded')}>Fund</button>
               </div>
             </div>
-            {c && !c.has_resolved && (
+            {c && !c.evidence_sealed && !c.has_resolved && (
+              <div className="action">
+                <h3>Seal evidence</h3>
+                <p className="hint">Worker only. Fetches the frozen URL once, stores snapshot + sha256. Cannot be changed.</p>
+                <button className="primary" disabled={loading || !isWorker} onClick={() => sendTx('seal_evidence', 0n, 90000, 'Evidence sealed')}>Seal evidence</button>
+              </div>
+            )}
+            {c && c.evidence_sealed && !c.has_resolved && (
               <div className="action">
                 <h3>Resolve</h3>
-                <p className="hint">Validators fetch the evidence URL. Refund stays blocked until deadline_unix.</p>
+                <p className="hint">Uses the sealed snapshot only. Late seals cannot pay.</p>
                 <button className="primary" disabled={loading} onClick={() => sendTx('resolve', 0n, 90000, 'Resolve sent')}>Resolve</button>
               </div>
             )}
             {c?.delivery_status === 'delivered' && !c.is_paid && (
-              <div className="action">
-                <h3>Pay worker</h3>
-                <button className="primary" disabled={loading} onClick={() => sendTx('pay_worker', 0n, 25000, 'Worker paid')}>Pay worker</button>
-              </div>
+              <button className="primary" disabled={loading} onClick={() => sendTx('pay_worker', 0n, 25000, 'Worker paid')}>Pay worker</button>
             )}
             {c && ['not_delivered', 'unknown'].includes(c.delivery_status) && !c.is_refunded && (
               <div className="action">
-                <h3>Refund client</h3>
-                <p className="hint">{c.deadline_passed ? 'Deadline reached.' : 'Blocked until deadline.'}</p>
+                <p className="hint">{c.deadline_passed ? 'Deadline reached.' : 'Refund blocked until deadline.'}</p>
                 <button disabled={loading || !c.deadline_passed} onClick={() => sendTx('refund_client', 0n, 25000, 'Refunded')}>Refund client</button>
               </div>
             )}
             {c?.is_paid && Number(c.escrow_balance) > 0 && (
-              <div className="action">
-                <h3>Withdraw remainder</h3>
-                <button className="primary" disabled={loading || !isClient} onClick={() => sendTx('withdraw_remainder', 0n, 25000, 'Remainder withdrawn')}>Withdraw remainder</button>
-              </div>
+              <button className="primary" disabled={loading || !isClient} onClick={() => sendTx('withdraw_remainder', 0n, 25000, 'Remainder withdrawn')}>Withdraw remainder</button>
             )}
           </>
         )}
@@ -163,7 +164,7 @@ function App() {
 
       <footer>
         <div>Contract · {CONTRACT}</div>
-        <div>Testnet Bradbury</div>
+        <div>Testnet Bradbury · sealed snapshot + deadline</div>
       </footer>
     </div>
   )

@@ -1,8 +1,9 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 import json
+import hashlib
 
 
 @gl.evm.contract_interface
@@ -24,6 +25,11 @@ class MilestoneDeliveryClaim(gl.Contract):
     payment_amount: u256
     escrow_balance: u256
 
+    evidence_snapshot: str
+    evidence_hash: str
+    evidence_sealed: bool
+    sealed_unix: u256
+
     status: str
     has_resolved: bool
     is_paid: bool
@@ -41,6 +47,10 @@ class MilestoneDeliveryClaim(gl.Contract):
         self.deadline_unix = u256(self._deadline_to_unix(deadline))
         self.payment_amount = u256(payment_amount)
         self.escrow_balance = gl.message.value
+        self.evidence_snapshot = ""
+        self.evidence_hash = ""
+        self.evidence_sealed = False
+        self.sealed_unix = u256(0)
         self.status = "open"
         self.has_resolved = False
         self.is_paid = False
@@ -60,12 +70,22 @@ class MilestoneDeliveryClaim(gl.Contract):
     def _deadline_passed(self) -> bool:
         return self._now_unix() >= int(self.deadline_unix)
 
+    def _sealed_on_time(self) -> bool:
+        return self.evidence_sealed and int(self.sealed_unix) <= int(self.deadline_unix)
+
+    def _hash_text(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
     @gl.public.view
     def get_claim(self) -> dict:
         return {
             "client": str(self.client),
             "worker": str(self.worker),
             "evidence_url": self.evidence_url,
+            "evidence_hash": self.evidence_hash,
+            "evidence_sealed": self.evidence_sealed,
+            "sealed_unix": int(self.sealed_unix),
+            "sealed_on_time": self._sealed_on_time(),
             "milestone_description": self.milestone_description,
             "deadline": self.deadline,
             "deadline_unix": int(self.deadline_unix),
@@ -87,10 +107,42 @@ class MilestoneDeliveryClaim(gl.Contract):
         amount = gl.message.value
         require(amount > u256(0), "Must send GEN")
         self.escrow_balance += amount
-        if self.escrow_balance >= self.payment_amount and self.payment_amount > u256(0):
-            if self.status in ("open", "delivered"):
-                self.status = "funded" if self.status == "open" else self.status
-        return {"ok": True, "escrow_balance": int(self.escrow_balance), "status": self.status}
+        if self.escrow_balance >= self.payment_amount and self.status == "open":
+            self.status = "funded"
+        return {"ok": True, "escrow_balance": int(self.escrow_balance)}
+
+    @gl.public.write
+    def seal_evidence(self) -> dict:
+        require(gl.message.sender_address == self.worker, "Only worker")
+        require(not self.has_resolved, "Already resolved")
+        require(not self.evidence_sealed, "Already sealed")
+        url = self.evidence_url
+
+        def leader_fn() -> dict:
+            page = gl.nondet.web.render(url, mode="text")
+            text = str(page)[:8000]
+            return {"snapshot": text, "hash": hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()}
+
+        def validator_fn(leader_result) -> bool:
+            if not isinstance(leader_result, gl.vm.Return):
+                return False
+            leader = leader_result.calldata
+            if not isinstance(leader, dict):
+                return False
+            mine = leader_fn()
+            return mine.get("hash") == leader.get("hash")
+
+        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        self.evidence_snapshot = str(result.get("snapshot", ""))[:8000]
+        self.evidence_hash = str(result.get("hash", ""))
+        self.evidence_sealed = True
+        self.sealed_unix = u256(self._now_unix())
+        return {
+            "ok": True,
+            "evidence_hash": self.evidence_hash,
+            "sealed_unix": int(self.sealed_unix),
+            "sealed_on_time": self._sealed_on_time(),
+        }
 
     def _pay_worker(self) -> dict:
         require(self.escrow_balance >= self.payment_amount, "Underfunded")
@@ -98,7 +150,7 @@ class MilestoneDeliveryClaim(gl.Contract):
         self.escrow_balance -= self.payment_amount
         self.is_paid = True
         self.status = "paid"
-        return {"ok": True, "status": self.status, "paid": int(self.payment_amount), "remainder": int(self.escrow_balance)}
+        return {"ok": True, "status": "paid", "remainder": int(self.escrow_balance)}
 
     def _refund_client(self) -> dict:
         require(self._deadline_passed(), "Deadline not reached")
@@ -108,11 +160,12 @@ class MilestoneDeliveryClaim(gl.Contract):
         self.escrow_balance = u256(0)
         self.is_refunded = True
         self.status = "refunded"
-        return {"ok": True, "status": self.status, "refunded": int(amount)}
+        return {"ok": True, "status": "refunded", "refunded": int(amount)}
 
     @gl.public.write
     def resolve(self) -> dict:
-        require(self.payment_amount > u256(0), "Invalid payment_amount")
+        require(self.payment_amount > u256(0), "Invalid payment")
+        require(self.evidence_sealed, "Evidence not sealed")
         if self.has_resolved and self.status in ("paid", "refunded"):
             return {"ok": False, "message": "Already settled", "status": self.status}
         if self.has_resolved:
@@ -122,36 +175,37 @@ class MilestoneDeliveryClaim(gl.Contract):
                 return self._refund_client()
             return {"ok": False, "message": "Nothing to settle", "status": self.status}
 
-        evidence_url = self.evidence_url
+        if not self._sealed_on_time():
+            self.has_resolved = True
+            self.delivery_status = "not_delivered"
+            self.note = "Evidence sealed after deadline"
+            self.status = "not_delivered"
+            if self.escrow_balance > u256(0) and self._deadline_passed():
+                return self._refund_client()
+            return {"ok": True, "status": self.status, "note": self.note}
+
+        snapshot = self.evidence_snapshot
+        evidence_hash = self.evidence_hash
         milestone_description = self.milestone_description
         deadline = self.deadline
 
         def leader_fn() -> dict:
-            page = gl.nondet.web.render(evidence_url, mode="text")
             prompt = f"""
-You are verifying whether a milestone was delivered based on public evidence.
+Verify milestone delivery using ONLY the sealed snapshot. Do not use a live page.
 
-Milestone:
-{milestone_description}
+Milestone: {milestone_description}
+Deadline: {deadline}
+Sealed snapshot hash: {evidence_hash}
+Sealed snapshot: {snapshot[:6000]}
 
-Deadline:
-{deadline}
-
-Evidence page content:
-{page[:12000]}
-
-Respond with valid JSON only:
-{{
-  "delivery_status": "delivered" | "not_delivered" | "unknown",
-  "note": "<one short sentence of evidence-based reasoning>"
-}}
+JSON only:
+{{"delivery_status":"delivered"|"not_delivered"|"unknown","note":"<one sentence>"}}
 
 Rules:
-- "delivered" if the page clearly shows the described work exists or was completed.
-- "not_delivered" if the page clearly shows missing, incomplete, or absent work.
-- "unknown" if the page is unrelated, empty, or insufficient.
-- Do not invent facts not present on the page.
-- Deadline is context only; do not assume dates not shown on the page.
+- delivered if the snapshot clearly shows the described work exists.
+- not_delivered if the snapshot shows missing or incomplete work.
+- unknown if insufficient.
+- Do not invent facts.
 """
             raw = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(raw, dict):
@@ -159,8 +213,7 @@ Rules:
             status = str(raw.get("delivery_status", "unknown")).lower().strip()
             if status not in ("delivered", "not_delivered", "unknown"):
                 status = "unknown"
-            note = str(raw.get("note", ""))[:300]
-            return {"delivery_status": status, "note": note}
+            return {"delivery_status": status, "note": str(raw.get("note", ""))[:300]}
 
         def validator_fn(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
@@ -169,9 +222,7 @@ Rules:
             if not isinstance(leader, dict):
                 return False
             mine = leader_fn()
-            if mine["delivery_status"] != leader.get("delivery_status"):
-                return False
-            return True
+            return mine["delivery_status"] == leader.get("delivery_status")
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
         self.has_resolved = True
@@ -182,11 +233,11 @@ Rules:
         if self.delivery_status == "delivered":
             if self.escrow_balance >= self.payment_amount:
                 return self._pay_worker()
-            return {"ok": True, "status": "delivered", "message": "Delivered but underfunded. Call fund() then pay_worker()."}
+            return {"ok": True, "status": "delivered", "message": "Underfunded. fund() then pay_worker()."}
 
         if self.escrow_balance > u256(0) and self._deadline_passed():
             return self._refund_client()
-        return {"ok": True, "status": self.status, "note": self.note, "message": "Refund blocked until deadline. Call refund_client() after deadline."}
+        return {"ok": True, "status": self.status, "note": self.note}
 
     @gl.public.write
     def pay_worker(self) -> dict:
