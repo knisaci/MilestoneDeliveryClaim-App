@@ -57,7 +57,7 @@ class MilestoneDeliveryClaim(gl.Contract):
         self.is_refunded = False
         self.delivery_status = ""
         self.note = ""
-        if self.escrow_balance >= self.payment_amount and self.payment_amount > u256(0):
+        if self.payment_amount > u256(0) and self.escrow_balance >= self.payment_amount:
             self.status = "funded"
 
     def _deadline_to_unix(self, deadline_str: str) -> int:
@@ -72,9 +72,6 @@ class MilestoneDeliveryClaim(gl.Contract):
 
     def _sealed_on_time(self) -> bool:
         return self.evidence_sealed and int(self.sealed_unix) <= int(self.deadline_unix)
-
-    def _hash_text(self, text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
     @gl.public.view
     def get_claim(self) -> dict:
@@ -103,6 +100,7 @@ class MilestoneDeliveryClaim(gl.Contract):
 
     @gl.public.write.payable
     def fund(self) -> dict:
+        require(self.payment_amount > u256(0), "Zero-payment claim cannot accept funds")
         require(not self.is_paid and not self.is_refunded, "Settled")
         amount = gl.message.value
         require(amount > u256(0), "Must send GEN")
@@ -113,6 +111,7 @@ class MilestoneDeliveryClaim(gl.Contract):
 
     @gl.public.write
     def seal_evidence(self) -> dict:
+        require(self.payment_amount > u256(0), "Zero-payment claim cannot accept funds")
         require(gl.message.sender_address == self.worker, "Only worker")
         require(not self.has_resolved, "Already resolved")
         require(not self.evidence_sealed, "Already sealed")
@@ -152,8 +151,7 @@ class MilestoneDeliveryClaim(gl.Contract):
         self.status = "paid"
         return {"ok": True, "status": "paid", "remainder": int(self.escrow_balance)}
 
-    def _refund_client(self) -> dict:
-        require(self._deadline_passed(), "Deadline not reached")
+    def _send_refund(self) -> dict:
         require(self.escrow_balance > u256(0), "Nothing to refund")
         amount = self.escrow_balance
         _Recipient(self.client).emit_transfer(value=amount)
@@ -164,7 +162,7 @@ class MilestoneDeliveryClaim(gl.Contract):
 
     @gl.public.write
     def resolve(self) -> dict:
-        require(self.payment_amount > u256(0), "Invalid payment")
+        require(self.payment_amount > u256(0), "Zero-payment claim cannot accept funds")
         require(self.evidence_sealed, "Evidence not sealed")
         if self.has_resolved and self.status in ("paid", "refunded"):
             return {"ok": False, "message": "Already settled", "status": self.status}
@@ -172,7 +170,8 @@ class MilestoneDeliveryClaim(gl.Contract):
             if self.delivery_status == "delivered" and not self.is_paid:
                 return self._pay_worker()
             if self.delivery_status in ("not_delivered", "unknown") and not self.is_refunded:
-                return self._refund_client()
+                require(self._deadline_passed(), "Deadline not reached")
+                return self._send_refund()
             return {"ok": False, "message": "Nothing to settle", "status": self.status}
 
         if not self._sealed_on_time():
@@ -181,7 +180,7 @@ class MilestoneDeliveryClaim(gl.Contract):
             self.note = "Evidence sealed after deadline"
             self.status = "not_delivered"
             if self.escrow_balance > u256(0) and self._deadline_passed():
-                return self._refund_client()
+                return self._send_refund()
             return {"ok": True, "status": self.status, "note": self.note}
 
         snapshot = self.evidence_snapshot
@@ -236,7 +235,7 @@ Rules:
             return {"ok": True, "status": "delivered", "message": "Underfunded. fund() then pay_worker()."}
 
         if self.escrow_balance > u256(0) and self._deadline_passed():
-            return self._refund_client()
+            return self._send_refund()
         return {"ok": True, "status": self.status, "note": self.note}
 
     @gl.public.write
@@ -254,7 +253,14 @@ Rules:
         require(not self.is_refunded, "Already refunded")
         require(not self.is_paid, "Already paid")
         require(self._deadline_passed(), "Deadline not reached")
-        return self._refund_client()
+        return self._send_refund()
+
+    @gl.public.write
+    def refund_after_deadline(self) -> dict:
+        require(not self.is_paid, "Already paid")
+        require(not self.is_refunded, "Already refunded")
+        require(self._deadline_passed(), "Deadline not reached")
+        return self._send_refund()
 
     @gl.public.write
     def withdraw_remainder(self) -> dict:

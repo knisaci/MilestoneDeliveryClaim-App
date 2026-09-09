@@ -3,7 +3,7 @@ import { createClient } from 'genlayer-js'
 import { testnetBradbury } from 'genlayer-js/chains'
 import './App.css'
 
-const CONTRACT = '0x3fdfb8bfb3E5EfFa8f6048b52e072A012919adbd'
+const CONTRACT = '0xc06Ea3fb95809E4741b28d6BF2763A335Ae1c4d5'
 const readClient = createClient({ chain: testnetBradbury })
 
 function short(addr) {
@@ -69,6 +69,7 @@ function App() {
   const isClient = account && c && account.toLowerCase() === String(c.client || '').toLowerCase()
   const isWorker = account && c && account.toLowerCase() === String(c.worker || '').toLowerCase()
   const pill = c?.status || 'loading'
+  const canDeadlineRefund = c && c.deadline_passed && !c.is_paid && !c.is_refunded && Number(c.escrow_balance) > 0
 
   return (
     <div className="app">
@@ -76,7 +77,7 @@ function App() {
       <header>
         <div className="badge">GenLayer · Sealed milestone escrow</div>
         <h1>Milestone Delivery Claim</h1>
-        <p className="sub">Client names the evidence URL. Worker seals a snapshot + hash. Resolve uses only that snapshot. A seal after the deadline cannot pay.</p>
+        <p className="sub">Worker seals a snapshot. Resolve uses only that snapshot. After the deadline, unused escrow returns to the client even if nothing was sealed.</p>
       </header>
 
       <section className="card hero">
@@ -126,6 +127,7 @@ function App() {
             <p className="wallet">{short(account)}{isClient ? ' · client' : ''}{isWorker ? ' · worker' : ''}</p>
             <div className="action">
               <h3>Fund</h3>
+              <p className="hint">Rejected on-chain if payment_amount is zero.</p>
               <div className="row">
                 <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} />
                 <button className="primary" disabled={loading || !isClient} onClick={() => sendTx('fund', wei(), 25000, 'Funded')}>Fund</button>
@@ -134,7 +136,7 @@ function App() {
             {c && !c.evidence_sealed && !c.has_resolved && (
               <div className="action">
                 <h3>Seal evidence</h3>
-                <p className="hint">Worker only. Fetches the frozen URL once, stores snapshot + sha256. Cannot be changed.</p>
+                <p className="hint">Worker only. Snapshot is frozen. If this call fails, funds are still recoverable after the deadline.</p>
                 <button className="primary" disabled={loading || !isWorker} onClick={() => sendTx('seal_evidence', 0n, 90000, 'Evidence sealed')}>Seal evidence</button>
               </div>
             )}
@@ -154,6 +156,13 @@ function App() {
                 <button disabled={loading || !c.deadline_passed} onClick={() => sendTx('refund_client', 0n, 25000, 'Refunded')}>Refund client</button>
               </div>
             )}
+            {canDeadlineRefund && (
+              <div className="action">
+                <h3>Refund after deadline</h3>
+                <p className="hint">Does not need a seal, a successful render, or resolve(). Returns remaining escrow to the client.</p>
+                <button className="primary" disabled={loading} onClick={() => sendTx('refund_after_deadline', 0n, 25000, 'Refunded after deadline')}>Refund after deadline</button>
+              </div>
+            )}
             {c?.is_paid && Number(c.escrow_balance) > 0 && (
               <button className="primary" disabled={loading || !isClient} onClick={() => sendTx('withdraw_remainder', 0n, 25000, 'Remainder withdrawn')}>Withdraw remainder</button>
             )}
@@ -164,7 +173,7 @@ function App() {
 
       <footer>
         <div>Contract · {CONTRACT}</div>
-        <div>Testnet Bradbury · sealed snapshot + deadline</div>
+        <div>Testnet Bradbury · snapshot + deadline refund</div>
       </footer>
     </div>
   )

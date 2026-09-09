@@ -32,7 +32,7 @@ def make_claim(**overrides):
         worker="0xworker",
         evidence_url="https://github.com/knisaci/PublicEvidenceDispute",
         milestone_description="repo exists",
-        deadline="2026-09-10",
+        deadline="2026-09-20",
         payment_amount=3,
     )
     c.client = fake_genlayer.Address("0xclient")
@@ -43,8 +43,8 @@ def make_claim(**overrides):
 
 def test_imports_contract():
     src = (ROOT / "MilestoneDeliveryClaim.py").read_text()
-    assert "def seal_evidence" in src
-    assert "def resolve" in src
+    assert "def refund_after_deadline" in src
+    assert "Zero-payment claim cannot accept funds" in src
     assert hasattr(mdc, "MilestoneDeliveryClaim")
     print("PASS test_imports_contract")
 
@@ -110,7 +110,7 @@ def test_refund_blocked_before_deadline():
         assert "deadline" in str(e).lower()
     print("PASS test_refund_blocked_before_deadline")
 
-def test_refund_after_deadline():
+def test_refund_after_deadline_resolved():
     TRANSFERS.clear()
     c = make_claim(
         has_resolved=True,
@@ -125,7 +125,7 @@ def test_refund_after_deadline():
     assert c.is_refunded is True
     assert int(c.escrow_balance) == 0
     assert TRANSFERS == [("0xclient", 4)]
-    print("PASS test_refund_after_deadline")
+    print("PASS test_refund_after_deadline_resolved")
 
 def test_withdraw_remainder():
     TRANSFERS.clear()
@@ -136,12 +136,76 @@ def test_withdraw_remainder():
     assert TRANSFERS == [("0xclient", 2)]
     print("PASS test_withdraw_remainder")
 
+def test_no_seal_refund_after_deadline():
+    TRANSFERS.clear()
+    c = make_claim(
+        evidence_sealed=False,
+        has_resolved=False,
+        is_paid=False,
+        is_refunded=False,
+        escrow_balance=mdc.u256(7),
+        deadline_unix=mdc.u256(10),
+    )
+    c._now_unix = lambda: 20
+    c.refund_after_deadline()
+    assert c.is_refunded is True
+    assert int(c.escrow_balance) == 0
+    assert TRANSFERS == [("0xclient", 7)]
+    print("PASS test_no_seal_refund_after_deadline")
+
+def test_render_failure_refund_after_deadline():
+    TRANSFERS.clear()
+    c = make_claim(
+        evidence_sealed=False,
+        evidence_hash="",
+        evidence_snapshot="",
+        has_resolved=False,
+        is_paid=False,
+        is_refunded=False,
+        escrow_balance=mdc.u256(9),
+        deadline_unix=mdc.u256(10),
+    )
+    c._now_unix = lambda: 50
+    c.refund_after_deadline()
+    assert c.is_refunded is True
+    assert TRANSFERS == [("0xclient", 9)]
+    print("PASS test_render_failure_refund_after_deadline")
+
+def test_zero_payment_cannot_fund():
+    c = make_claim(payment_amount=mdc.u256(0), escrow_balance=mdc.u256(0))
+    fake_genlayer.message.value = 5
+    try:
+        c.fund()
+        raise SystemExit("FAIL: zero-payment accepted funds")
+    except AssertionError as e:
+        assert "zero" in str(e).lower()
+    print("PASS test_zero_payment_cannot_fund")
+
+def test_deadline_refund_blocked_before_deadline():
+    c = make_claim(
+        evidence_sealed=False,
+        has_resolved=False,
+        escrow_balance=mdc.u256(3),
+        deadline_unix=mdc.u256(100),
+    )
+    c._now_unix = lambda: 10
+    try:
+        c.refund_after_deadline()
+        raise SystemExit("FAIL: deadline refund before deadline")
+    except AssertionError as e:
+        assert "deadline" in str(e).lower()
+    print("PASS test_deadline_refund_blocked_before_deadline")
+
 if __name__ == "__main__":
     test_imports_contract()
     test_resolve_requires_seal()
     test_late_seal_cannot_pay()
     test_on_time_delivered_pays_only_payment()
     test_refund_blocked_before_deadline()
-    test_refund_after_deadline()
+    test_refund_after_deadline_resolved()
     test_withdraw_remainder()
+    test_no_seal_refund_after_deadline()
+    test_render_failure_refund_after_deadline()
+    test_zero_payment_cannot_fund()
+    test_deadline_refund_blocked_before_deadline()
     print("All contract-import settlement tests passed.")
